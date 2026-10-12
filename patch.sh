@@ -1346,7 +1346,6 @@ observer_field = """    private final Callback<@Nullable Tab> mTabSupplierObserv
                         tab != null && tab.getWebContents() != null
                                 ? tab.getWebContents()
                                 : getCurrentWebContents();
-                mExtensionsToolbarBridge.setActiveWebContents(webContents);
                 updateActionPropertiesForAll(webContents);
             };
 """
@@ -1369,6 +1368,11 @@ if "mTabSupplierObserver" not in text:
         "        mExtensionsToolbarBridge.removeObserver(mToolbarObserver);\n",
         1,
     )
+text = text.replace(
+    "                mExtensionsToolbarBridge.setActiveWebContents(webContents);\n"
+    "                updateActionPropertiesForAll(webContents);\n",
+    "                updateActionPropertiesForAll(webContents);\n",
+)
 anchor = re.search(
     r"(?m)^    (?:private )?void updateActionPropertiesForAll\(WebContents webContents\) \{$",
     text,
@@ -1376,6 +1380,13 @@ anchor = re.search(
 if anchor is None:
     raise SystemExit(f"updateActionPropertiesForAll insertion anchor not found in {path}")
 text = text[:anchor.start()] + helper + text[anchor.start():]
+if "mExtensionsToolbarBridge.setActiveWebContents(webContents);" not in text:
+    text = re.sub(
+        r"(?m)^(    (?:private )?void updateActionPropertiesForAll\(WebContents webContents\) \{\n)",
+        r"\1        mExtensionsToolbarBridge.setActiveWebContents(webContents);\n",
+        text,
+        count=1,
+    )
 if len(signature.findall(text)) != 1:
     raise SystemExit(f"expected exactly one getCurrentWebContents helper in {path}")
 path.write_text(text)
