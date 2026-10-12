@@ -3517,6 +3517,10 @@ if "HeliumAndroidBuildTabListIncognitoModels" not in text:
     }
   }
   return result;"""
+    old_build_noindent = old_build.replace(
+        "    if (!tab_list) { continue; }\n",
+        "if (!tab_list) { continue; }\n",
+    )
     old_build_alt = old_build.replace("    if (!tab_list) { continue; }\n", "")
     new_build = """    TabListInterface* tab_list = TabListInterface::From(browser);
     if (!tab_list) { continue; }
@@ -3603,10 +3607,34 @@ if "HeliumAndroidBuildTabListIncognitoModels" not in text:
   }
 #endif
   return result;"""
+    build_pattern = re.compile(
+        r"([ \t]*TabListInterface\* tab_list = TabListInterface::From\(browser\);\n"
+        r"(?:[ \t]*if \(!tab_list\) \{ continue; \}\n)*"
+        r"[ \t]*for \(int i = 0; i < tab_list->GetTabCount\(\); \+\+i\) \{\n"
+        r"[ \t]*if \(tab_index > -1 && i != tab_index\) \{\n"
+        r"[ \t]*continue;\n"
+        r"[ \t]*\}\n\n"
+        r"[ \t]*::tabs::TabInterface\* tab = tab_list->GetTab\(i\);\n"
+        r"[ \t]*CHECK\(tab\);\n\n"
+        r"[ \t]*if \(!MatchesTab\(tab, url_patterns\)\) \{\n"
+        r"[ \t]*continue;\n"
+        r"[ \t]*\}\n\n"
+        r"[ \t]*result\.Append\(tabs_internal::CreateTabObjectHelper\(\n"
+        r"[ \t]*tab->GetContents\(\), extension\(\), source_context_type\(\),\n"
+        r"[ \t]*browser, i\)\n"
+        r"[ \t]*\.ToValue\(\)\);\n"
+        r"[ \t]*\}\n"
+        r"[ \t]*\}\n"
+        r"[ \t]*return result;)"
+    )
     if old_build in text:
         text = text.replace(old_build, new_build, 1)
+    elif old_build_noindent in text:
+        text = text.replace(old_build_noindent, new_build, 1)
     elif old_build_alt in text:
         text = text.replace(old_build_alt, new_build, 1)
+    elif build_pattern.search(text):
+        text = build_pattern.sub(lambda _: new_build, text, count=1)
     else:
         raise SystemExit(f"BuildTabList pattern not found in {path}")
 
