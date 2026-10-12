@@ -978,8 +978,7 @@ grep -q 'private @Nullable WebContents getCurrentWebContents()' "$MENU_MEDIATOR"
         if (incognitoTab != null\
                 && incognitoTab.getWebContents() != null\
                 && (mTabModelSelector.isOffTheRecordModelSelected()\
-                        || incognitoTab.isUserInteractable()\
-                        || incognitoTab.isActivated())) {\
+                        || incognitoTab.isUserInteractable())) {\
             return incognitoTab.getWebContents();\
         }\
         Tab currentTab = mTabModelSelector.getCurrentTab();\
@@ -1116,6 +1115,14 @@ replacement = """content::WebContents* GetLastAndroidExtensionActionWebContents(
   content::WebContents* cached_contents =
       GetLastAndroidExtensionActionWebContentsStorage().get();
   for (TabModel* tab_model : TabModelList::models()) {
+    if (!tab_model || !tab_model->IsActiveModel()) {
+      continue;
+    }
+    if (content::WebContents* contents = tab_model->GetActiveWebContents()) {
+      return contents;
+    }
+  }
+  for (TabModel* tab_model : TabModelList::models()) {
     if (!tab_model || !tab_model->IsOffTheRecord()) {
       continue;
     }
@@ -1124,12 +1131,22 @@ replacement = """content::WebContents* GetLastAndroidExtensionActionWebContents(
       continue;
     }
     TabAndroid* tab = TabAndroid::FromWebContents(contents);
-    if ((tab && (tab->IsUserInteractable() || tab->IsActivated())) ||
-        contents == cached_contents) {
+    if ((tab && tab->IsUserInteractable()) || contents == cached_contents) {
       return contents;
     }
   }
-  return cached_contents;
+  if (cached_contents) {
+    return cached_contents;
+  }
+  for (TabModel* tab_model : TabModelList::models()) {
+    if (!tab_model) {
+      continue;
+    }
+    if (content::WebContents* contents = tab_model->GetActiveWebContents()) {
+      return contents;
+    }
+  }
+  return nullptr;
 }"""
 text = text[:start] + replacement + text[end:]
 path.write_text(text)
@@ -1302,8 +1319,7 @@ helper = """    private @Nullable WebContents getCurrentWebContents() {
         if (incognitoTab != null
                 && incognitoTab.getWebContents() != null
                 && (mTabModelSelector.isOffTheRecordModelSelected()
-                        || incognitoTab.isUserInteractable()
-                        || incognitoTab.isActivated())) {
+                        || incognitoTab.isUserInteractable())) {
             return incognitoTab.getWebContents();
         }
         Tab currentTab = mTabModelSelector.getCurrentTab();
@@ -1318,6 +1334,41 @@ helper = """    private @Nullable WebContents getCurrentWebContents() {
     }
 
 """
+if "import org.chromium.base.Callback;" not in text:
+    text = text.replace(
+        "import org.chromium.base.lifetime.Destroyable;\n",
+        "import org.chromium.base.Callback;\nimport org.chromium.base.lifetime.Destroyable;\n",
+        1,
+    )
+observer_field = """    private final Callback<@Nullable Tab> mTabSupplierObserver =
+            (tab) -> {
+                WebContents webContents =
+                        tab != null && tab.getWebContents() != null
+                                ? tab.getWebContents()
+                                : getCurrentWebContents();
+                mExtensionsToolbarBridge.setActiveWebContents(webContents);
+                updateActionPropertiesForAll(webContents);
+            };
+"""
+if "mTabSupplierObserver" not in text:
+    text = text.replace(
+        "    private final ToolbarObserver mToolbarObserver = new ToolbarObserver();\n",
+        "    private final ToolbarObserver mToolbarObserver = new ToolbarObserver();\n"
+        + observer_field,
+        1,
+    )
+    text = text.replace(
+        "        mExtensionsToolbarBridge.addObserver(mToolbarObserver);\n",
+        "        mExtensionsToolbarBridge.addObserver(mToolbarObserver);\n"
+        "        mCurrentTabSupplier.addSyncObserver(mTabSupplierObserver);\n",
+        1,
+    )
+    text = text.replace(
+        "        mExtensionsToolbarBridge.removeObserver(mToolbarObserver);\n",
+        "        mCurrentTabSupplier.removeObserver(mTabSupplierObserver);\n"
+        "        mExtensionsToolbarBridge.removeObserver(mToolbarObserver);\n",
+        1,
+    )
 anchor = re.search(
     r"(?m)^    (?:private )?void updateActionPropertiesForAll\(WebContents webContents\) \{$",
     text,
@@ -1601,6 +1652,139 @@ if "HeliumAndroidExtensionTabIdFallback" not in text:
 """,
         1,
     )
+
+if "HeliumAndroidCreateTabObjectIncognitoFix" not in text:
+    old_create = """  if (!tab_list) {
+    GetTabListInterface(*contents, &tab_list, &tab_index);
+  }"""
+    new_create = """  // HeliumAndroidCreateTabObjectIncognitoFix: resolve the true TabModel
+  // when a caller passes the regular window TabListInterface for an OTR tab.
+  if (!tab_list || tab_index < 0 || tab_index >= tab_list->GetTabCount() ||
+      (tab_list->GetTab(tab_index) &&
+       tab_list->GetTab(tab_index)->GetContents() != contents)) {
+    GetTabListInterface(*contents, &tab_list, &tab_index);
+  }"""
+    if old_create not in text:
+        raise SystemExit(f"CreateTabObject tab_list pattern not found in {path}")
+    text = text.replace(old_create, new_create, 1)
+
+    old_active = """  bool is_active = tab_interface && tab_interface->IsActivated();
+  tab_object.active = is_active;
+  tab_object.selected = is_active;"""
+    new_active = """  bool is_active = tab_interface && tab_interface->IsActivated();
+#if BUILDFLAG(IS_ANDROID)
+  for (TabModel* model : TabModelList::models()) {
+    if (model == tab_list) {
+      is_active = model->IsActiveModel() && tab_index == model->GetActiveIndex();
+      break;
+    }
+  }
+#endif
+  tab_object.active = is_active;
+  tab_object.selected = is_active;"""
+    if old_active not in text:
+        raise SystemExit(f"CreateTabObject is_active pattern not found in {path}")
+    text = text.replace(old_active, new_active, 1)
+
+if "HeliumAndroidGetTabListInterfaceIncognitoFix" not in text:
+    old_gtli = """bool ExtensionTabUtil::GetTabListInterface(content::WebContents& web_contents,
+                                           TabListInterface** tab_list_out,
+                                           int* index_out) {
+  tabs::TabInterface* tab_interface =
+      tabs::TabInterface::MaybeGetFromContents(&web_contents);
+  if (!tab_interface) {
+    return false;
+  }"""
+    new_gtli = """bool ExtensionTabUtil::GetTabListInterface(content::WebContents& web_contents,
+                                           TabListInterface** tab_list_out,
+                                           int* index_out) {
+#if BUILDFLAG(IS_ANDROID)
+  // HeliumAndroidGetTabListInterfaceIncognitoFix: Android incognito tabs live
+  // in the off-the-record TabModel in TabModelList::models() rather than the
+  // regular BrowserWindowInterface TabListInterface.
+  for (TabModel* model : TabModelList::models()) {
+    if (!model) {
+      continue;
+    }
+    for (int i = 0; i < model->GetTabCount(); ++i) {
+      if (model->GetWebContentsAt(i) == &web_contents) {
+        *index_out = i;
+        *tab_list_out = model;
+        return true;
+      }
+    }
+  }
+#endif
+  tabs::TabInterface* tab_interface =
+      tabs::TabInterface::MaybeGetFromContents(&web_contents);
+  if (!tab_interface) {
+    return false;
+  }"""
+    if old_gtli not in text:
+        raise SystemExit(f"GetTabListInterface pattern not found in {path}")
+    text = text.replace(old_gtli, new_gtli, 1)
+
+if "HeliumAndroidGetTabByIdTabModelListFallback" not in text:
+    old_gtbi = """  // Prerendering tab is not visible and it cannot be in `TabStripModel`, if the"""
+    new_gtbi = """#if BUILDFLAG(IS_ANDROID)
+  // HeliumAndroidGetTabByIdTabModelListFallback: search TabModelList::models()
+  // so chrome.action.setIcon/setTitle/setBadgeText and chrome.tabs.get find
+  // Android incognito tabs that do not have a separate BrowserWindowInterface.
+  for (TabModel* model : TabModelList::models()) {
+    if (!model || !model->GetProfile()) {
+      continue;
+    }
+    if (model->GetProfile() != profile &&
+        model->GetProfile() != incognito_profile &&
+        !(include_incognito && profile &&
+          profile->IsSameOrParent(model->GetProfile()))) {
+      continue;
+    }
+    for (int i = 0; i < model->GetTabCount(); ++i) {
+      WebContents* target_contents = model->GetWebContentsAt(i);
+      if (!target_contents) {
+        continue;
+      }
+      int target_tab_id =
+          sessions::SessionTabHelper::IdForTab(target_contents).id();
+      if (target_tab_id == -1) {
+        const TabAndroid* target_tab =
+            TabAndroid::FromWebContents(target_contents);
+        if (target_tab) {
+          target_tab_id = target_tab->GetAndroidId();
+        }
+      }
+      if (target_tab_id == tab_id) {
+        if (out_window) {
+          for (WindowController* window :
+               *WindowControllerList::GetInstance()) {
+            bool is_alive =
+                window->GetBrowserWindowInterface() &&
+                !window->GetBrowserWindowInterface()->IsDeleteScheduled();
+            if (is_alive && profile &&
+                profile->IsSameOrParent(window->profile())) {
+              *out_window = window;
+              break;
+            }
+          }
+        }
+        if (out_contents) {
+          *out_contents = target_contents;
+        }
+        if (out_tab_index) {
+          *out_tab_index = i;
+        }
+        return true;
+      }
+    }
+  }
+#endif
+
+  // Prerendering tab is not visible and it cannot be in `TabStripModel`, if the"""
+    if old_gtbi not in text:
+        raise SystemExit(f"GetTabById prerender anchor not found in {path}")
+    text = text.replace(old_gtbi, new_gtbi, 1)
+
 path.write_text(text)
 PYCODE
 
@@ -1611,6 +1795,185 @@ else
   sed -i '/#include "base\/strings\/utf_string_conversions.h"/a\#include "chrome/browser/extensions/extension_tab_util.h"' "$EXTENSION_ACTION_VIEW_MODEL"
 fi
 perl -0pi -e 's|sessions::SessionTabHelper::IdForTab\(web_contents\)\.id\(\)|extensions::ExtensionTabUtil::GetTabId(web_contents)|g; s|(?<!extensions::)ExtensionTabUtil::GetTabId\(web_contents\)|extensions::ExtensionTabUtil::GetTabId(web_contents)|g; s|extensions::extensions::ExtensionTabUtil::GetTabId\(web_contents\)|extensions::ExtensionTabUtil::GetTabId(web_contents)|g' "$EXTENSION_ACTION_VIEW_MODEL"
+    python3 - "$EXTENSION_ACTION_VIEW_MODEL" "chrome/browser/ui/extensions/extensions_toolbar_view_model.cc" "chrome/browser/ui/extensions/extensions_menu_view_model.cc" "chrome/browser/extensions/extension_action_dispatcher.cc" "chrome/browser/extensions/extension_action_runner.cc" <<'PYCODE'
+from pathlib import Path
+import sys
+
+action_vm_path = Path(sys.argv[1])
+toolbar_vm_path = Path(sys.argv[2])
+menu_vm_path = Path(sys.argv[3])
+dispatcher_path = Path(sys.argv[4])
+runner_path = Path(sys.argv[5])
+
+decl_block = """#if BUILDFLAG(IS_ANDROID)
+namespace extensions {
+content::WebContents* GetLastAndroidExtensionActionWebContents();
+void SetLastAndroidExtensionActionWebContents(content::WebContents* web_contents);
+}  // namespace extensions
+#endif
+"""
+
+# 1. ExtensionActionViewModel
+text = action_vm_path.read_text()
+if "GetLastAndroidExtensionActionWebContents()" not in text:
+    anchor = "static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));\n"
+    if anchor not in text:
+        raise SystemExit(f"static_assert anchor not found in {action_vm_path}")
+    text = text.replace(anchor, anchor + "\n" + decl_block, 1)
+
+old_exec = """  content::WebContents* const web_contents = GetCurrentWebContents();
+  if (!IsEnabled(web_contents)) {"""
+new_exec = """  content::WebContents* const web_contents = GetCurrentWebContents();
+#if BUILDFLAG(IS_ANDROID)
+  extensions::SetLastAndroidExtensionActionWebContents(web_contents);
+#endif
+  if (!IsEnabled(web_contents)) {"""
+if "extensions::SetLastAndroidExtensionActionWebContents(web_contents);" not in text:
+    if old_exec not in text:
+        raise SystemExit(f"ExecuteUserAction pattern not found in {action_vm_path}")
+    text = text.replace(old_exec, new_exec, 1)
+
+old_get_current = """content::WebContents* ExtensionActionViewModel::GetCurrentWebContents() const {
+  if (delegate_) {
+    if (auto* web_contents = delegate_->GetActiveWebContents()) {
+      return web_contents;
+    }
+  }
+  tabs::TabInterface* tab = TabListInterface::From(browser_)->GetActiveTab();
+  if (!tab) {
+    return nullptr;
+  }
+  return tab->GetContents();
+}"""
+new_get_current = """content::WebContents* ExtensionActionViewModel::GetCurrentWebContents() const {
+  if (delegate_) {
+    if (auto* web_contents = delegate_->GetActiveWebContents()) {
+      return web_contents;
+    }
+  }
+#if BUILDFLAG(IS_ANDROID)
+  if (content::WebContents* active_contents =
+          extensions::GetLastAndroidExtensionActionWebContents()) {
+    Profile* active_profile =
+        Profile::FromBrowserContext(active_contents->GetBrowserContext());
+    if (browser_->GetProfile()->IsSameOrParent(active_profile)) {
+      return active_contents;
+    }
+  }
+#endif
+  tabs::TabInterface* tab = TabListInterface::From(browser_)->GetActiveTab();
+  if (!tab) {
+    return nullptr;
+  }
+  return tab->GetContents();
+}"""
+if "extensions::GetLastAndroidExtensionActionWebContents()" not in text[text.find("ExtensionActionViewModel::GetCurrentWebContents()"):]:
+    if old_get_current not in text:
+        raise SystemExit(f"GetCurrentWebContents pattern not found in {action_vm_path}")
+    text = text.replace(old_get_current, new_get_current, 1)
+action_vm_path.write_text(text)
+
+# 2. ExtensionsToolbarViewModel
+if toolbar_vm_path.exists():
+    t_text = toolbar_vm_path.read_text()
+    if "#include \"build/build_config.h\"" not in t_text:
+        t_text = t_text.replace(
+            "#include \"base/strings/utf_string_conversions.h\"\n",
+            "#include \"base/strings/utf_string_conversions.h\"\n#include \"build/build_config.h\"\n",
+            1,
+        )
+    if "GetLastAndroidExtensionActionWebContents()" not in t_text:
+        anchor = "static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));\n"
+        if anchor not in t_text:
+            raise SystemExit(f"static_assert anchor not found in {toolbar_vm_path}")
+        t_text = t_text.replace(anchor, anchor + "\n" + decl_block, 1)
+    old_tb_curr = """content::WebContents* ExtensionsToolbarViewModel::GetCurrentWebContents()
+    const {
+  tabs::TabInterface* tab = TabListInterface::From(browser_)->GetActiveTab();
+  if (!tab) {
+    return nullptr;
+  }
+  return tab->GetContents();
+}"""
+    new_tb_curr = """content::WebContents* ExtensionsToolbarViewModel::GetCurrentWebContents()
+    const {
+#if BUILDFLAG(IS_ANDROID)
+  if (content::WebContents* active_contents =
+          extensions::GetLastAndroidExtensionActionWebContents()) {
+    Profile* active_profile =
+        Profile::FromBrowserContext(active_contents->GetBrowserContext());
+    if (browser_->GetProfile()->IsSameOrParent(active_profile)) {
+      return active_contents;
+    }
+  }
+#endif
+  tabs::TabInterface* tab = TabListInterface::From(browser_)->GetActiveTab();
+  if (!tab) {
+    return nullptr;
+  }
+  return tab->GetContents();
+}"""
+    if "extensions::GetLastAndroidExtensionActionWebContents()" not in t_text[t_text.find("ExtensionsToolbarViewModel::GetCurrentWebContents()"):]:
+        if old_tb_curr not in t_text:
+            raise SystemExit(f"GetCurrentWebContents pattern not found in {toolbar_vm_path}")
+        t_text = t_text.replace(old_tb_curr, new_tb_curr, 1)
+    toolbar_vm_path.write_text(t_text)
+
+# 3. ExtensionsMenuViewModel
+if menu_vm_path.exists():
+    m_text = menu_vm_path.read_text()
+    if "GetLastAndroidExtensionActionWebContents()" not in m_text:
+        anchor = "static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));\n"
+        if anchor not in m_text:
+            raise SystemExit(f"static_assert anchor not found in {menu_vm_path}")
+        m_text = m_text.replace(anchor, anchor + "\n" + decl_block, 1)
+    menu_fn_pos = m_text.find("ExtensionsMenuViewModel::GetActiveWebContents()")
+    if menu_fn_pos < 0:
+        raise SystemExit(f"GetActiveWebContents not found in {menu_vm_path}")
+    if "extensions::GetLastAndroidExtensionActionWebContents()" not in m_text[menu_fn_pos:]:
+        target_anchor = "  auto* tab_list = TabListInterface::From(browser_);\n"
+        anchor_pos = m_text.find(target_anchor, menu_fn_pos)
+        if anchor_pos < 0:
+            raise SystemExit(f"tab_list anchor not found in {menu_vm_path}")
+        injected = """#if BUILDFLAG(IS_ANDROID)
+  if (content::WebContents* active_contents =
+          extensions::GetLastAndroidExtensionActionWebContents()) {
+    Profile* active_profile =
+        Profile::FromBrowserContext(active_contents->GetBrowserContext());
+    if (browser_->GetProfile()->IsSameOrParent(active_profile)) {
+      return active_contents;
+    }
+  }
+#endif
+"""
+        m_text = m_text[:anchor_pos] + injected + m_text[anchor_pos:]
+    menu_vm_path.write_text(m_text)
+
+# 4. ExtensionActionDispatcher & ExtensionActionRunner tab_id consistency
+if dispatcher_path.exists():
+    d_text = dispatcher_path.read_text()
+    d_text = d_text.replace(
+        "  const SessionID tab_id = sessions::SessionTabHelper::IdForTab(web_contents);\n",
+        "  const int tab_id = ExtensionTabUtil::GetTabId(web_contents);\n",
+    )
+    d_text = d_text.replace(
+        "extension_action->ClearAllValuesForTab(tab_id.id());",
+        "extension_action->ClearAllValuesForTab(tab_id);",
+    )
+    d_text = d_text.replace(
+        "extension_action->ClearDeclarativeValuesForTab(tab_id.id());",
+        "extension_action->ClearDeclarativeValuesForTab(tab_id);",
+    )
+    dispatcher_path.write_text(d_text)
+
+if runner_path.exists():
+    r_text = runner_path.read_text()
+    r_text = r_text.replace(
+        "sessions::SessionTabHelper::IdForTab(web_contents()).id()",
+        "ExtensionTabUtil::GetTabId(web_contents())",
+    )
+    runner_path.write_text(r_text)
+PYCODE
 
 # ext: priority
 sed -i 's|private @ChildProcessImportance int mEffectiveImportance;$|&private final boolean mIsExtensionProcess;|' content/public/android/java/src/org/chromium/content/browser/ChildProcessLauncherHelperImpl.java
@@ -2654,7 +3017,13 @@ if [ -f "$TABS_API_CC" ]; then
         sed -i '/#include "build\/build_config.h"/a\
 #if BUILDFLAG(IS_ANDROID)\
 #include "chrome/browser/android/tab_android.h"\
+#include "chrome/browser/ui/android/tab_model/tab_model.h"\
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"\
 #endif' "$TABS_API_CC"
+    grep -q 'chrome/browser/ui/android/tab_model/tab_model_list.h' "$TABS_API_CC" || \
+        sed -i '/#include "chrome\/browser\/android\/tab_android.h"/a\
+#include "chrome/browser/ui/android/tab_model/tab_model.h"\
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"' "$TABS_API_CC"
     grep -q 'content/public/browser/visibility.h' "$TABS_API_CC" || \
         sed -i '/#include "content\/public\/browser\/navigation_handle.h"/a\#include "content/public/browser/visibility.h"' "$TABS_API_CC"
     python3 - "$TABS_API_CC" <<'PYCODE'
@@ -2888,10 +3257,40 @@ text = text.replace(
     "if (!contents || !contents->GetBrowserContext()->IsOffTheRecord() ||\\n"
     "          contents->GetVisibility() != content::Visibility::VISIBLE) {")
 robust_if = """  if (helium_android_current_tab_query) {
-    content::WebContents* last_action_contents =
-        GetLastAndroidExtensionActionWebContents();
     Profile* calling_profile =
         Profile::FromBrowserContext(browser_context());
+    for (TabModel* model : TabModelList::models()) {
+      if (!model || !model->IsActiveModel() || !model->GetProfile()) {
+        continue;
+      }
+      if (!calling_profile->IsSameOrParent(model->GetProfile())) {
+        continue;
+      }
+      if (!include_incognito_information() &&
+          calling_profile != model->GetProfile()) {
+        continue;
+      }
+      content::WebContents* active_model_contents =
+          model->GetActiveWebContents();
+      if (!active_model_contents) {
+        continue;
+      }
+      base::ListValue direct_result;
+      ExtensionTabUtil::ScrubTabBehavior dont_scrub = {
+          ExtensionTabUtil::kDontScrubTab, ExtensionTabUtil::kDontScrubTab};
+      base::DictValue tab_value =
+          ExtensionTabUtil::CreateTabObject(
+              active_model_contents, dont_scrub, extension(), model,
+              model->GetActiveIndex())
+              .ToValue();
+      tab_value.Set(tabs_constants::kActiveKey, true);
+      tab_value.Set(tabs_constants::kSelectedKey, true);
+      direct_result.Append(std::move(tab_value));
+      return RespondNow(WithArguments(std::move(direct_result)));
+    }
+
+    content::WebContents* last_action_contents =
+        GetLastAndroidExtensionActionWebContents();
     Profile* action_profile =
         last_action_contents
             ? Profile::FromBrowserContext(
@@ -3005,7 +3404,7 @@ robust_if = """  if (helium_android_current_tab_query) {
     std::vector<int> appended_tab_ids;
     auto append_tab =
         [&](content::WebContents* contents, TabListInterface* tab_list,
-            int tab_index) {
+            int tab_index, bool is_active_tab) {
           if (!contents) {
             return;
           }
@@ -3033,15 +3432,20 @@ robust_if = """  if (helium_android_current_tab_query) {
                                                 extension(), tab_list,
                                                 tab_index)
                   .ToValue();
-          TabAndroid* android_tab = TabAndroid::FromWebContents(contents);
-          if (android_tab &&
-              (android_tab->IsUserInteractable() ||
-               android_tab->IsActivated())) {
-            tab_value.Set(tabs_constants::kActiveKey, true);
-            tab_value.Set(tabs_constants::kSelectedKey, true);
-          }
+          tab_value.Set(tabs_constants::kActiveKey, is_active_tab);
+          tab_value.Set(tabs_constants::kSelectedKey, is_active_tab);
           direct_result.Append(std::move(tab_value));
         };
+    for (TabModel* model : TabModelList::models()) {
+      if (!model) {
+        continue;
+      }
+      for (int i = 0; i < model->GetTabCount(); ++i) {
+        bool is_active_tab =
+            model->IsActiveModel() && i == model->GetActiveIndex();
+        append_tab(model->GetWebContentsAt(i), model, i, is_active_tab);
+      }
+    }
     for (BrowserWindowInterface* browser : GetAllBrowserWindowInterfaces()) {
       TabListInterface* tab_list = TabListInterface::From(browser);
       if (!tab_list) {
@@ -3049,33 +3453,12 @@ robust_if = """  if (helium_android_current_tab_query) {
       }
       for (int i = 0; i < tab_list->GetTabCount(); ++i) {
         ::tabs::TabInterface* tab = tab_list->GetTab(i);
-        append_tab(tab ? tab->GetContents() : nullptr, tab_list, i);
-      }
-    }
-    append_tab(GetLastAndroidExtensionActionWebContents(), nullptr, -1);
-    int action_tab_id = GetLastAndroidExtensionActionTabId();
-    if (action_tab_id >= 0) {
-      WindowController* action_window = nullptr;
-      content::WebContents* action_contents = nullptr;
-      int action_index = -1;
-      std::string action_error;
-      if (tabs_internal::GetTabById(
-              action_tab_id, browser_context(),
-              /*include_incognito=*/true, &action_window, &action_contents,
-              &action_index, &action_error) &&
-          action_contents) {
-        BrowserWindowInterface* action_browser =
-            action_window ? action_window->GetBrowserWindowInterface()
-                          : nullptr;
-        append_tab(action_contents,
-                   action_browser ? TabListInterface::From(action_browser)
-                                  : nullptr,
-                   action_index);
+        append_tab(tab ? tab->GetContents() : nullptr, tab_list, i,
+                   tab && tab->IsActivated());
       }
     }
     return RespondNow(WithArguments(std::move(direct_result)));
-  }
-"""
+  }"""
 while True:
     unfiltered_match = re.search(
         r"(?m)^[ \t]*const bool helium_android_unfiltered_tab_query =\n", text)
@@ -3122,6 +3505,121 @@ if start >= 0:
     if end is None:
         raise SystemExit(f"query block end not found in {path}")
     text = text[:start] + robust_if + text[end:]
+
+if "HeliumAndroidBuildTabListIncognitoModels" not in text:
+    old_build = """    TabListInterface* tab_list = TabListInterface::From(browser);
+    if (!tab_list) { continue; }
+    for (int i = 0; i < tab_list->GetTabCount(); ++i) {
+      if (tab_index > -1 && i != tab_index) {
+        continue;
+      }
+
+      ::tabs::TabInterface* tab = tab_list->GetTab(i);
+      CHECK(tab);
+
+      if (!MatchesTab(tab, url_patterns)) {
+        continue;
+      }
+
+      result.Append(tabs_internal::CreateTabObjectHelper(
+                        tab->GetContents(), extension(), source_context_type(),
+                        browser, i)
+                        .ToValue());
+    }
+  }
+  return result;"""
+    old_build_alt = old_build.replace("    if (!tab_list) { continue; }\n", "")
+    new_build = """    TabListInterface* tab_list = TabListInterface::From(browser);
+    if (!tab_list) { continue; }
+#if BUILDFLAG(IS_ANDROID)
+    bool has_active_otr_model = false;
+    for (TabModel* model : TabModelList::models()) {
+      if (model && model->IsOffTheRecord() && model->IsActiveModel()) {
+        has_active_otr_model = true;
+        break;
+      }
+    }
+#endif
+    for (int i = 0; i < tab_list->GetTabCount(); ++i) {
+      if (tab_index > -1 && i != tab_index) {
+        continue;
+      }
+
+      ::tabs::TabInterface* tab = tab_list->GetTab(i);
+      CHECK(tab);
+
+#if BUILDFLAG(IS_ANDROID)
+      if (has_active_otr_model && query_info_.active && *query_info_.active) {
+        continue;
+      }
+#endif
+      if (!MatchesTab(tab, url_patterns)) {
+        continue;
+      }
+
+      result.Append(tabs_internal::CreateTabObjectHelper(
+                        tab->GetContents(), extension(), source_context_type(),
+                        browser, i)
+                        .ToValue());
+    }
+  }
+#if BUILDFLAG(IS_ANDROID)
+  // HeliumAndroidBuildTabListIncognitoModels: include OTR TabModels when
+  // querying tabs on Android.
+  Profile* calling_profile = Profile::FromBrowserContext(browser_context());
+  for (TabModel* model : TabModelList::models()) {
+    if (!model || !model->IsOffTheRecord() || !model->GetProfile()) {
+      continue;
+    }
+    if (!calling_profile->IsSameOrParent(model->GetProfile())) {
+      continue;
+    }
+    if (!include_incognito_information() &&
+        calling_profile != model->GetProfile()) {
+      continue;
+    }
+    for (int i = 0; i < model->GetTabCount(); ++i) {
+      if (tab_index > -1 && i != tab_index) {
+        continue;
+      }
+      ::tabs::TabInterface* tab = model->GetTab(i);
+      if (!tab || !tab->GetContents()) {
+        continue;
+      }
+      bool is_active_in_window =
+          model->IsActiveModel() && i == model->GetActiveIndex();
+      if (query_info_.active.has_value() &&
+          *query_info_.active != is_active_in_window) {
+        continue;
+      }
+      std::optional<bool> saved_active = query_info_.active;
+      query_info_.active.reset();
+      bool matched = MatchesTab(tab, url_patterns);
+      query_info_.active = saved_active;
+      if (!matched) {
+        continue;
+      }
+      ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
+          ExtensionTabUtil::GetScrubTabBehavior(
+              extension(), source_context_type(), tab->GetContents());
+      base::DictValue tab_val =
+          ExtensionTabUtil::CreateTabObject(tab->GetContents(),
+                                            scrub_tab_behavior, extension(),
+                                            model, i)
+              .ToValue();
+      tab_val.Set(tabs_constants::kActiveKey, is_active_in_window);
+      tab_val.Set(tabs_constants::kSelectedKey, is_active_in_window);
+      result.Append(std::move(tab_val));
+    }
+  }
+#endif
+  return result;"""
+    if old_build in text:
+        text = text.replace(old_build, new_build, 1)
+    elif old_build_alt in text:
+        text = text.replace(old_build_alt, new_build, 1)
+    else:
+        raise SystemExit(f"BuildTabList pattern not found in {path}")
 
 # Keep reruns safe for Chromium trees patched by an older script revision.
 # Rename only the outer cached WebContents variable and leave the later
