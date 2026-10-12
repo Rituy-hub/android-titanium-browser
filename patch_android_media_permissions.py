@@ -434,6 +434,425 @@ def patch_file_system_access_downloads(src_dir: str) -> None:
     print("Patched chrome_file_system_access_permission_context.cc to allow Downloads directory on Android")
 
 
+def patch_download_directory_provider(src_dir: str) -> None:
+    provider_path = os.path.join(
+        src_dir,
+        "chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/DownloadDirectoryProvider.java",
+    )
+    if not os.path.exists(provider_path):
+        print(f"Error: {provider_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    with open(provider_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if "getCustomDownloadDirectories()" in content:
+        print("DownloadDirectoryProvider.java already patched")
+        return
+
+    old_task_block = """            if (hasAddtionalDirectory) {
+                recordDirectoryType(DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL);
+            }
+
+            return dirs;"""
+
+    new_task_block = """            for (File customDir : getCustomDownloadDirectories()) {
+                if (customDir == null) continue;
+                boolean alreadyAdded = false;
+                for (DirectoryOption existing : dirs) {
+                    if (existing != null
+                            && existing.location != null
+                            && existing.location.equals(customDir.getAbsolutePath())) {
+                        alreadyAdded = true;
+                        break;
+                    }
+                }
+                if (alreadyAdded) continue;
+                DirectoryOption customOption =
+                        toDirectoryOption(
+                                customDir,
+                                DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL);
+                if (customOption != null) {
+                    customOption.name = formatCustomDirectoryName(customDir);
+                    dirs.add(customOption);
+                    hasAddtionalDirectory = true;
+                }
+            }
+
+            if (hasAddtionalDirectory) {
+                recordDirectoryType(DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL);
+            }
+
+            return dirs;"""
+
+    old_secondary_check = """            assumeNonNull(secondaryDirs);
+            if (secondaryDirs.isEmpty()) return dirs;
+            boolean hasAddtionalDirectory = false;"""
+
+    new_secondary_check = """            assumeNonNull(secondaryDirs);
+            boolean hasAddtionalDirectory = false;"""
+
+    old_sdcard_block = """        return false;
+    }
+
+    private void updateDirectories() {"""
+
+    new_sdcard_block = """        String primaryPrivateDir = PathUtils.getDownloadsDirectory();
+        if (!TextUtils.isEmpty(primaryPrivateDir) && filePath.startsWith(primaryPrivateDir)) {
+            return false;
+        }
+        File publicDownloadsDir =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (publicDownloadsDir != null) {
+            String publicDownloadsPath = publicDownloadsDir.getAbsolutePath();
+            String parentPath = new File(filePath).getParent();
+            if (TextUtils.equals(parentPath, publicDownloadsPath)) {
+                return false;
+            }
+        }
+        try {
+            File extRoot = Environment.getExternalStorageDirectory();
+            if (extRoot != null && filePath.startsWith(extRoot.getAbsolutePath())) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+
+        return false;
+    }
+
+    public static List<File> getCustomDownloadDirectories() {
+        ArrayList<File> customDirs = new ArrayList<>();
+        try {
+            File extRoot = Environment.getExternalStorageDirectory();
+            if (extRoot == null) return customDirs;
+            String[] standardNames =
+                    new String[] {
+                        Environment.DIRECTORY_DOWNLOADS,
+                        Environment.DIRECTORY_DOCUMENTS,
+                        Environment.DIRECTORY_PICTURES,
+                        Environment.DIRECTORY_MOVIES,
+                        Environment.DIRECTORY_MUSIC,
+                        Environment.DIRECTORY_DCIM,
+                    };
+            for (String dirName : standardNames) {
+                if (TextUtils.isEmpty(dirName)) continue;
+                File dir = new File(extRoot, dirName);
+                if (!dir.exists()) {
+                    try {
+                        dir.mkdirs();
+                    } catch (SecurityException ignored) {
+                    }
+                }
+                if (dir.exists() && dir.isDirectory()) {
+                    customDirs.add(dir);
+                }
+            }
+            File downloadsRoot = new File(extRoot, Environment.DIRECTORY_DOWNLOADS);
+            File[] downloadSubDirs = downloadsRoot.listFiles();
+            if (downloadSubDirs != null) {
+                for (File sub : downloadSubDirs) {
+                    if (sub != null
+                            && sub.isDirectory()
+                            && !sub.isHidden()
+                            && !sub.getName().startsWith(".")) {
+                        customDirs.add(sub);
+                    }
+                }
+            }
+            File[] rootSubDirs = extRoot.listFiles();
+            if (rootSubDirs != null) {
+                for (File sub : rootSubDirs) {
+                    if (sub == null
+                            || !sub.isDirectory()
+                            || sub.isHidden()
+                            || sub.getName().startsWith(".")) {
+                        continue;
+                    }
+                    if ("Android".equalsIgnoreCase(sub.getName())) continue;
+                    boolean alreadyIncluded = false;
+                    for (File existing : customDirs) {
+                        if (existing.getAbsolutePath().equals(sub.getAbsolutePath())) {
+                            alreadyIncluded = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyIncluded) {
+                        customDirs.add(sub);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to enumerate custom download directories.", e);
+        }
+        return customDirs;
+    }
+
+    public static String formatCustomDirectoryName(File dir) {
+        try {
+            File extRoot = Environment.getExternalStorageDirectory();
+            if (extRoot != null) {
+                String rootPath = extRoot.getAbsolutePath();
+                String dirPath = dir.getAbsolutePath();
+                if (dirPath.startsWith(rootPath + File.separator)) {
+                    return dirPath.substring(rootPath.length() + 1);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return dir.getName();
+    }
+
+    private void updateDirectories() {"""
+
+    if (
+        old_task_block not in content
+        or old_secondary_check not in content
+        or old_sdcard_block not in content
+    ):
+        print(
+            "Error: Expected anchors not found in DownloadDirectoryProvider.java",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    content = content.replace(old_secondary_check, new_secondary_check, 1)
+    content = content.replace(old_task_block, new_task_block, 1)
+    content = content.replace(old_sdcard_block, new_sdcard_block, 1)
+
+    with open(provider_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Patched DownloadDirectoryProvider.java with custom storage directories")
+
+
+def patch_download_directory_adapter(src_dir: str) -> None:
+    adapter_path = os.path.join(
+        src_dir,
+        "chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/settings/DownloadDirectoryAdapter.java",
+    )
+    if not os.path.exists(adapter_path):
+        print(f"Error: {adapter_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    with open(adapter_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if "// Helium: preserve custom directory name" in content:
+        print("DownloadDirectoryAdapter.java already patched")
+        return
+
+    old_block = """                case DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL:
+                    String directoryName =
+                            (numOtherAdditionalDirectories > 0)
+                                    ? mContext.getString(
+                                            R.string.downloads_location_sd_card_number,
+                                            numOtherAdditionalDirectories + 1)
+                                    : mContext.getString(R.string.downloads_location_sd_card);
+                    directory.name = directoryName;
+                    mAdditionalOptions.add(directory);
+                    numOtherAdditionalDirectories++;
+                    break;"""
+
+    new_block = """                case DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL:
+                    // Helium: preserve custom directory name if already provided.
+                    if (directory.name == null || directory.name.isEmpty()) {
+                        String directoryName =
+                                (numOtherAdditionalDirectories > 0)
+                                        ? mContext.getString(
+                                                R.string.downloads_location_sd_card_number,
+                                                numOtherAdditionalDirectories + 1)
+                                        : mContext.getString(R.string.downloads_location_sd_card);
+                        directory.name = directoryName;
+                        numOtherAdditionalDirectories++;
+                    }
+                    mAdditionalOptions.add(directory);
+                    break;"""
+
+    old_init_block = """        String defaultLocation = helper.getDownloadDefaultDirectory();
+        for (int i = 0; i < getCount(); i++) {
+            DirectoryOption option = (DirectoryOption) getItem(i);
+            if (option == null) continue;
+            if (defaultLocation.equals(option.location)) {
+                selectedId = i;
+                break;
+            }
+        }
+        mSelectedPosition = selectedId;"""
+
+    new_init_block = """        String defaultLocation = helper.getDownloadDefaultDirectory();
+        for (int i = 0; i < getCount(); i++) {
+            DirectoryOption option = (DirectoryOption) getItem(i);
+            if (option == null) continue;
+            if (defaultLocation.equals(option.location)) {
+                selectedId = i;
+                break;
+            }
+        }
+        if (selectedId == NO_SELECTED_ITEM_ID
+                && defaultLocation != null
+                && !defaultLocation.isEmpty()) {
+            java.io.File customDir = new java.io.File(defaultLocation);
+            if (!customDir.exists()) {
+                try {
+                    customDir.mkdirs();
+                } catch (SecurityException ignored) {
+                }
+            }
+            if (customDir.exists() && customDir.isDirectory()) {
+                DirectoryOption customOption =
+                        new DirectoryOption(
+                                DownloadDirectoryProvider.formatCustomDirectoryName(customDir),
+                                customDir.getAbsolutePath(),
+                                customDir.getUsableSpace(),
+                                customDir.getTotalSpace(),
+                                DirectoryOption.DownloadLocationDirectoryType.ADDITIONAL);
+                mAdditionalOptions.add(0, customOption);
+                selectedId = mCanonicalOptions.size();
+            }
+        }
+        mSelectedPosition = selectedId;"""
+
+    if old_block not in content or old_init_block not in content:
+        print(
+            "Error: Expected anchors not found in DownloadDirectoryAdapter.java",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    content = content.replace(old_block, new_block, 1)
+    content = content.replace(old_init_block, new_init_block, 1)
+
+    with open(adapter_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Patched DownloadDirectoryAdapter.java to support custom download directory options")
+
+
+def patch_download_file_provider(src_dir: str) -> None:
+    provider_path = os.path.join(
+        src_dir,
+        "chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/DownloadFileProvider.java",
+    )
+    if not os.path.exists(provider_path):
+        print(f"Error: {provider_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    with open(provider_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if "URI_CUSTOM_EXTERNAL_PATH" in content:
+        print("DownloadFileProvider.java already patched")
+        return
+
+    old_const = '    private static final String URI_EXTERNAL_PATH = "external_volume";\n'
+    new_const = (
+        '    private static final String URI_EXTERNAL_PATH = "external_volume";\n'
+        '    private static final String URI_CUSTOM_EXTERNAL_PATH = "custom_external";\n'
+    )
+
+    old_create_end = """        for (File file : info.directoriesPreR) {
+            if (file == null) continue;
+            if (filePath.startsWith(file.getAbsolutePath())) {
+                return buildUri(
+                        URI_EXTERNAL_PATH_LEGACY,
+                        filePath.substring(file.getAbsolutePath().length() + 1));
+            }
+        }
+        return Uri.EMPTY;"""
+
+    new_create_end = """        for (File file : info.directoriesPreR) {
+            if (file == null) continue;
+            if (filePath.startsWith(file.getAbsolutePath())) {
+                return buildUri(
+                        URI_EXTERNAL_PATH_LEGACY,
+                        filePath.substring(file.getAbsolutePath().length() + 1));
+            }
+        }
+        File extRoot = android.os.Environment.getExternalStorageDirectory();
+        if (extRoot != null) {
+            String rootPath = extRoot.getAbsolutePath();
+            if (filePath.startsWith(rootPath + File.separator)) {
+                return buildUri(
+                        URI_CUSTOM_EXTERNAL_PATH,
+                        filePath.substring(rootPath.length() + 1));
+            }
+        }
+        return Uri.EMPTY;"""
+
+    old_parse_end = """        if (path.equals(URI_EXTERNAL_PATH_LEGACY) && !info.directoriesPreR.isEmpty()) {
+            // Only supports one directory.
+            return info.directoriesPreR.get(0).getAbsolutePath() + File.separator + query;
+        }
+        return null;"""
+
+    new_parse_end = """        if (path.equals(URI_EXTERNAL_PATH_LEGACY) && !info.directoriesPreR.isEmpty()) {
+            // Only supports one directory.
+            return info.directoriesPreR.get(0).getAbsolutePath() + File.separator + query;
+        }
+        if (path.equals(URI_CUSTOM_EXTERNAL_PATH)) {
+            File extRoot = android.os.Environment.getExternalStorageDirectory();
+            if (extRoot != null) {
+                return extRoot.getAbsolutePath() + File.separator + query;
+            }
+        }
+        return null;"""
+
+    if (
+        old_const not in content
+        or old_create_end not in content
+        or old_parse_end not in content
+    ):
+        print(
+            "Error: Expected anchors not found in DownloadFileProvider.java",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    content = content.replace(old_const, new_const, 1)
+    content = content.replace(old_create_end, new_create_end, 1)
+    content = content.replace(old_parse_end, new_parse_end, 1)
+
+    with open(provider_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Patched DownloadFileProvider.java to serve files from custom external storage directories")
+
+
+def patch_download_settings_location_prompt(src_dir: str) -> None:
+    settings_path = os.path.join(
+        src_dir,
+        "chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/settings/DownloadSettings.java",
+    )
+    if not os.path.exists(settings_path):
+        print(f"Error: {settings_path} not found", file=sys.stderr)
+        sys.exit(1)
+
+    with open(settings_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    old_method = """    private static boolean shouldEnableLocationPromptPref(Profile profile) {
+        return PdfUtils.shouldOpenPdfInline(profile.isOffTheRecord())
+                && DownloadDirectoryProvider.getSecondaryStorageDownloadDirectories().isEmpty();
+    }"""
+
+    new_method = """    private static boolean shouldEnableLocationPromptPref(Profile profile) {
+        return false;
+    }"""
+
+    if old_method not in content:
+        if "return false;" in content and "shouldEnableLocationPromptPref" in content:
+            print("DownloadSettings.java already patched")
+            return
+        print(
+            "Error: shouldEnableLocationPromptPref anchor not found in DownloadSettings.java",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    content = content.replace(old_method, new_method, 1)
+    with open(settings_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Patched DownloadSettings.java to always show download location prompt preference")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <chromium_src_dir>", file=sys.stderr)
@@ -444,6 +863,10 @@ def main() -> None:
     patch_select_file_dialog(src_dir)
     patch_file_enum_worker_task(src_dir)
     patch_file_system_access_downloads(src_dir)
+    patch_download_directory_provider(src_dir)
+    patch_download_directory_adapter(src_dir)
+    patch_download_file_provider(src_dir)
+    patch_download_settings_location_prompt(src_dir)
 
 
 if __name__ == "__main__":
