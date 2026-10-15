@@ -120,15 +120,22 @@ export DEPOT_TOOLS_UPDATE="${DEPOT_TOOLS_UPDATE:-0}"
 
 configure_network_env() {
     if [ -n "$BUILD_PROXY" ]; then
-        export http_proxy="$BUILD_PROXY"
-        export https_proxy="$BUILD_PROXY"
-        export HTTP_PROXY="$BUILD_PROXY"
-        export HTTPS_PROXY="$BUILD_PROXY"
+        local normalized_proxy="$BUILD_PROXY"
+        # Go's net/http (used by cipd/depot_tools) does not recognize the socks5h:// scheme.
+        # Convert socks5h:// to socks5:// so Go's proxy resolver does not misparse the scheme
+        # and trigger "lookup http on <dns>: no such host".
+        if [[ "$normalized_proxy" =~ ^socks5h:// ]]; then
+            normalized_proxy="socks5://${normalized_proxy#socks5h://}"
+        fi
+        export http_proxy="$normalized_proxy"
+        export https_proxy="$normalized_proxy"
+        export HTTP_PROXY="$normalized_proxy"
+        export HTTPS_PROXY="$normalized_proxy"
         export all_proxy="${all_proxy:-$BUILD_PROXY}"
         export ALL_PROXY="${ALL_PROXY:-$BUILD_PROXY}"
         export no_proxy="${no_proxy:-localhost,127.0.0.1,::1}"
         export NO_PROXY="${NO_PROXY:-$no_proxy}"
-        echo "Using build proxy: $BUILD_PROXY"
+        echo "Using build proxy: $normalized_proxy"
     fi
 
     export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
