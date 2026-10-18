@@ -506,7 +506,7 @@ else
     cp -a "$SCRIPT_DIR/vanadium/patches/." "$VANADIUM_PATCH_DIR/"
 
     # https://grapheneos.org/build#browser-and-webview
-    rm -f $VANADIUM_PATCH_DIR/*trichrome-{apk-build-targets,browser-apk-targets}.patch
+    rm -f $VANADIUM_PATCH_DIR/*trichrome*.patch
     rm -f $VANADIUM_PATCH_DIR/*{detailed,supported}-language*.patch
     rm -f $VANADIUM_PATCH_DIR/*javascript-optimizer-{site-setting,settings-UI}.patch
     rm -f $VANADIUM_PATCH_DIR/*component-updates.patch
