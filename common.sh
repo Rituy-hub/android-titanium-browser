@@ -62,6 +62,9 @@ sign_apk() {
             --ks-pass "pass:$storePassword" \
             --key-pass "pass:$keyPassword" \
             --ks-key-alias "$keyAlias" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
             --out "$2" \
             "$1" || exit 1
     else
@@ -70,6 +73,9 @@ sign_apk() {
             --ks-pass "pass:$storePassword" \
             --key-pass "pass:$keyPassword" \
             --ks-key-alias "$keyAlias" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
             --out "$2" \
             "$1" || exit 1
     fi
