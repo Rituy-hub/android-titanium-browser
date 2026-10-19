@@ -601,21 +601,67 @@ mkdir -p out/tmp out/release
 echo "Build options: BUILD_ARM=$BUILD_ARM BUILD_ARM64=$BUILD_ARM64 BUILD_AAB=$BUILD_AAB BUILD_VERSION_INCREMENT=$BUILD_VERSION_INCREMENT NINJA_JOBS=${NINJA_JOBS:-auto} OUTPUT_PREFIX=$OUTPUT_VERSION_PREFIX"
 
 if [ "$BUILD_ARM" = "1" ]; then
-    configure_out_dir out/arm arm
-    run_autoninja out/arm chrome_public_apk
-    copy_first_output out/arm/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    arm32_reused=0
+    if [ "$FAST_LOCAL_BUILD" = "1" ]; then
+        if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
+            echo "FAST_LOCAL_BUILD: Found existing arm32 release APK (out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk), skipping arm32 build."
+            arm32_reused=1
+        elif [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
+            echo "FAST_LOCAL_BUILD: Found existing arm32 temporary APK (out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk), skipping arm32 build."
+            arm32_reused=1
+        elif [ -d "out/arm/apks" ] && [ -n "$(find out/arm/apks -maxdepth 2 -name 'Chrome*.apk' -size +0c 2>/dev/null | head -n 1)" ]; then
+            echo "FAST_LOCAL_BUILD: Found existing arm32 APK in out/arm/apks, copying to out/tmp and skipping arm32 build."
+            copy_first_output out/arm/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+            arm32_reused=1
+        fi
+    fi
+
+    if [ "$arm32_reused" != "1" ]; then
+        configure_out_dir out/arm arm
+        run_autoninja out/arm chrome_public_apk
+        copy_first_output out/arm/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    fi
 fi
 
 if [ "$BUILD_ARM64" = "1" ]; then
-    configure_out_dir out/arm64 arm64
-    arm64_targets="chrome_public_apk"
-    if [ "$BUILD_AAB" = "1" ]; then
-        arm64_targets="$arm64_targets chrome_public_bundle"
+    arm64_reused=0
+    if [ "$FAST_LOCAL_BUILD" = "1" ]; then
+        has_arm64_apk=0
+        if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ] || [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
+            has_arm64_apk=1
+        elif [ -d "out/arm64/apks" ] && [ -n "$(find out/arm64/apks -maxdepth 2 -name 'Chrome*.apk' -size +0c 2>/dev/null | head -n 1)" ]; then
+            copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+            has_arm64_apk=1
+        fi
+
+        has_arm64_aab=1
+        if [ "$BUILD_AAB" = "1" ]; then
+            has_arm64_aab=0
+            if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ] || [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
+                has_arm64_aab=1
+            elif [ -d "out/arm64/apks" ] && [ -n "$(find out/arm64/apks -maxdepth 2 -name 'Chrome*.aab' -size +0c 2>/dev/null | head -n 1)" ]; then
+                copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+                has_arm64_aab=1
+            fi
+        fi
+
+        if [ "$has_arm64_apk" = "1" ] && [ "$has_arm64_aab" = "1" ]; then
+            echo "FAST_LOCAL_BUILD: Found existing arm64 target outputs, skipping arm64 build."
+            arm64_reused=1
+        fi
     fi
-    run_autoninja out/arm64 $arm64_targets
-    copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-    if [ "$BUILD_AAB" = "1" ]; then
-        copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+
+    if [ "$arm64_reused" != "1" ]; then
+        configure_out_dir out/arm64 arm64
+        arm64_targets="chrome_public_apk"
+        if [ "$BUILD_AAB" = "1" ]; then
+            arm64_targets="$arm64_targets chrome_public_bundle"
+        fi
+        run_autoninja out/arm64 $arm64_targets
+        copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+        if [ "$BUILD_AAB" = "1" ]; then
+            copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        fi
     fi
 fi
 
@@ -623,14 +669,26 @@ export PATH=$PWD/third_party/jdk/current/bin/:$PATH
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 release_outputs=""
 if [ "$BUILD_ARM" = "1" ]; then
-    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
+        echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    else
+        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    fi
     release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
 fi
 if [ "$BUILD_ARM64" = "1" ]; then
-    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
+        echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    else
+        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    fi
     release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
     if [ "$BUILD_AAB" = "1" ]; then
-        sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
+            echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        else
+            sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        fi
         release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
     fi
 fi
