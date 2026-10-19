@@ -624,44 +624,15 @@ if [ "$BUILD_ARM" = "1" ]; then
 fi
 
 if [ "$BUILD_ARM64" = "1" ]; then
-    arm64_reused=0
-    if [ "$FAST_LOCAL_BUILD" = "1" ]; then
-        has_arm64_apk=0
-        if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ] || [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
-            has_arm64_apk=1
-        elif [ -d "out/arm64/apks" ] && [ -n "$(find out/arm64/apks -maxdepth 2 -name 'Chrome*.apk' -size +0c 2>/dev/null | head -n 1)" ]; then
-            copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-            has_arm64_apk=1
-        fi
-
-        has_arm64_aab=1
-        if [ "$BUILD_AAB" = "1" ]; then
-            has_arm64_aab=0
-            if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ] || [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
-                has_arm64_aab=1
-            elif [ -d "out/arm64/apks" ] && [ -n "$(find out/arm64/apks -maxdepth 2 -name 'Chrome*.aab' -size +0c 2>/dev/null | head -n 1)" ]; then
-                copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
-                has_arm64_aab=1
-            fi
-        fi
-
-        if [ "$has_arm64_apk" = "1" ] && [ "$has_arm64_aab" = "1" ]; then
-            echo "FAST_LOCAL_BUILD: Found existing arm64 target outputs, skipping arm64 build."
-            arm64_reused=1
-        fi
+    configure_out_dir out/arm64 arm64
+    arm64_targets="chrome_public_apk"
+    if [ "$BUILD_AAB" = "1" ]; then
+        arm64_targets="$arm64_targets chrome_public_bundle"
     fi
-
-    if [ "$arm64_reused" != "1" ]; then
-        configure_out_dir out/arm64 arm64
-        arm64_targets="chrome_public_apk"
-        if [ "$BUILD_AAB" = "1" ]; then
-            arm64_targets="$arm64_targets chrome_public_bundle"
-        fi
-        run_autoninja out/arm64 $arm64_targets
-        copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-        if [ "$BUILD_AAB" = "1" ]; then
-            copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
-        fi
+    run_autoninja out/arm64 $arm64_targets
+    copy_first_output out/arm64/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    if [ "$BUILD_AAB" = "1" ]; then
+        copy_first_output out/arm64/apks 'Chrome*.aab' "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
     fi
 fi
 
@@ -677,18 +648,10 @@ if [ "$BUILD_ARM" = "1" ]; then
     release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
 fi
 if [ "$BUILD_ARM64" = "1" ]; then
-    if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
-        echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-    else
-        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-    fi
+    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
     release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
     if [ "$BUILD_AAB" = "1" ]; then
-        if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
-            echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
-        else
-            sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
-        fi
+        sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
         release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
     fi
 fi
