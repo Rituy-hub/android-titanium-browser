@@ -60,7 +60,7 @@ SKIP_SOURCE_PREPARE="${SKIP_SOURCE_PREPARE:-0}"
 SKIP_SYSTEM_DEPS="${SKIP_SYSTEM_DEPS:-0}"
 CCACHE_MAX_SIZE="${CCACHE_MAX_SIZE:-30G}"
 BUILD_PROXY="${BUILD_PROXY:-${https_proxy:-${http_proxy:-${HTTPS_PROXY:-${HTTP_PROXY:-}}}}}"
-BUILD_VERSION_INCREMENT="${BUILD_VERSION_INCREMENT:-$((($(date -u +%s) - 1577836800) / 60))}"
+BUILD_VERSION_INCREMENT="${BUILD_VERSION_INCREMENT:-}"
 GIT_BRANCH_NAME="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 if [ -n "${OUTPUT_BRANCH_TAG:-}" ]; then
     BRANCH_OUTPUT_TAG="$(printf '%s' "$OUTPUT_BRANCH_TAG" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
@@ -77,7 +77,15 @@ fi
 if [ "$FAST_LOCAL_BUILD" = "1" ]; then
     SKIP_SOURCE_PREPARE=1
     SKIP_SYSTEM_DEPS=1
+    if [ -z "$BUILD_VERSION_INCREMENT" ]; then
+        if [ -f "$SCRIPT_DIR/chromium/src/out/arm/args.gn" ]; then
+            BUILD_VERSION_INCREMENT="$(grep -m1 '^ext_version_increment[[:space:]]*=' "$SCRIPT_DIR/chromium/src/out/arm/args.gn" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+        elif [ -f "$SCRIPT_DIR/chromium/src/out/arm64/args.gn" ]; then
+            BUILD_VERSION_INCREMENT="$(grep -m1 '^ext_version_increment[[:space:]]*=' "$SCRIPT_DIR/chromium/src/out/arm64/args.gn" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+        fi
+    fi
 fi
+BUILD_VERSION_INCREMENT="${BUILD_VERSION_INCREMENT:-$((($(date -u +%s) - 1577836800) / 60))}"
 
 if [ "$SKIP_SOURCE_PREPARE" = "1" ] && [ -f "$SCRIPT_DIR/chromium/src/chrome/VERSION" ]; then
     LOCAL_CHROMIUM_VERSION="$(read_chromium_version "$SCRIPT_DIR/chromium/src/chrome/VERSION")"
@@ -601,22 +609,9 @@ mkdir -p out/tmp out/release
 echo "Build options: BUILD_ARM=$BUILD_ARM BUILD_ARM64=$BUILD_ARM64 BUILD_AAB=$BUILD_AAB BUILD_VERSION_INCREMENT=$BUILD_VERSION_INCREMENT NINJA_JOBS=${NINJA_JOBS:-auto} OUTPUT_PREFIX=$OUTPUT_VERSION_PREFIX"
 
 if [ "$BUILD_ARM" = "1" ]; then
-    arm32_reused=0
-    if [ "$FAST_LOCAL_BUILD" = "1" ]; then
-        if [ -s "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
-            echo "FAST_LOCAL_BUILD: Found existing arm32 release APK (out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk), skipping arm32 build."
-            arm32_reused=1
-        elif [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
-            echo "FAST_LOCAL_BUILD: Found existing arm32 temporary APK (out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk), skipping arm32 build."
-            arm32_reused=1
-        elif [ -d "out/arm/apks" ] && [ -n "$(find out/arm/apks -maxdepth 2 -name 'Chrome*.apk' -size +0c 2>/dev/null | head -n 1)" ]; then
-            echo "FAST_LOCAL_BUILD: Found existing arm32 APK in out/arm/apks, copying to out/tmp and skipping arm32 build."
-            copy_first_output out/arm/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
-            arm32_reused=1
-        fi
-    fi
-
-    if [ "$arm32_reused" != "1" ]; then
+    if [ "${SKIP_ARM32:-0}" = "1" ]; then
+        echo "SKIP_ARM32=1: Skipping arm32 compilation as requested."
+    else
         configure_out_dir out/arm arm
         run_autoninja out/arm chrome_public_apk
         copy_first_output out/arm/apks 'Chrome*.apk' "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
@@ -640,11 +635,7 @@ export PATH=$PWD/third_party/jdk/current/bin/:$PATH
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 release_outputs=""
 if [ "$BUILD_ARM" = "1" ]; then
-    if [ "$FAST_LOCAL_BUILD" = "1" ] && [ -s "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
-        echo "FAST_LOCAL_BUILD: Using existing signed out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
-    else
-        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
-    fi
+    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
     release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
 fi
 if [ "$BUILD_ARM64" = "1" ]; then
