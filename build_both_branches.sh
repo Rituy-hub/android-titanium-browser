@@ -10,6 +10,7 @@ BUILD_ARM64="${BUILD_ARM64:-1}"
 BUILD_AAB="${BUILD_AAB:-0}"
 NINJA_JOBS="${NINJA_JOBS:-14}"
 FAST_LOCAL_BUILD="${FAST_LOCAL_BUILD:-1}"
+AUTO_RELEASE="${AUTO_RELEASE:-1}"
 
 echo "=========================================================="
 echo " [1/2] Building 'main' branch..."
@@ -44,3 +45,11 @@ echo " SUCCESS: Both branches built successfully!"
 echo " Output files in chromium/src/out/release/:"
 echo "=========================================================="
 ls -lh "$SCRIPT_DIR/chromium/src/out/release"/*.apk 2>/dev/null || true
+
+if [ "$AUTO_RELEASE" = "1" ]; then
+    echo ""
+    echo "=========================================================="
+    echo " [Auto Release] Publishing artifacts with MOVE=1 release.sh..."
+    echo "=========================================================="
+    MOVE=1 "$SCRIPT_DIR/release.sh"
+fi
