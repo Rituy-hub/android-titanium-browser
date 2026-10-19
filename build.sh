@@ -635,15 +635,27 @@ export PATH=$PWD/third_party/jdk/current/bin/:$PATH
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
 release_outputs=""
 if [ "$BUILD_ARM" = "1" ]; then
-    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
-    release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    if [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
+        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+        release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    elif [ -s "out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk" ]; then
+        release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-armeabi-v7a.apk"
+    fi
 fi
 if [ "$BUILD_ARM64" = "1" ]; then
-    sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
-    release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    if [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
+        sign_apk "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+        release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    elif [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk" ]; then
+        release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.apk"
+    fi
     if [ "$BUILD_AAB" = "1" ]; then
-        sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
-        release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        if [ -s "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
+            sign_aab "out/tmp/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+            release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        elif [ -s "out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab" ]; then
+            release_outputs="$release_outputs out/release/${OUTPUT_VERSION_PREFIX}-arm64-v8a.aab"
+        fi
     fi
 fi
 echo "Build outputs:"
