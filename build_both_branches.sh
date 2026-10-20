@@ -9,13 +9,67 @@ BUILD_ARM="${BUILD_ARM:-1}"
 BUILD_ARM64="${BUILD_ARM64:-1}"
 BUILD_AAB="${BUILD_AAB:-0}"
 NINJA_JOBS="${NINJA_JOBS:-14}"
-FAST_LOCAL_BUILD="${FAST_LOCAL_BUILD:-1}"
+USER_FAST_LOCAL_BUILD="${FAST_LOCAL_BUILD:-}"
 AUTO_RELEASE="${AUTO_RELEASE:-1}"
 SKIP_IF_EXISTS="${SKIP_IF_EXISTS:-1}"
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
 
 VERSION_ARGS="$SCRIPT_DIR/vanadium/args.gn"
 VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' "$VERSION_ARGS" || true)
+
+if [ -z "$VERSION" ]; then
+    echo "ERROR: Unable to read Chromium version from $VERSION_ARGS" >&2
+    exit 1
+fi
+
+read_chromium_version() {
+    awk -F= '
+        /^(MAJOR|MINOR|BUILD|PATCH)=/ { value[$1] = $2 }
+        END {
+            print value["MAJOR"] "." value["MINOR"] "." value["BUILD"] "." value["PATCH"]
+        }
+    ' "$1"
+}
+
+# 自动判断本地 Chromium 源码环境是否就绪以支持 FAST_LOCAL_BUILD=1
+can_use_fast_local_build() {
+    local depot_tools_dir="$SCRIPT_DIR/depot_tools"
+    local chromium_src_dir="$SCRIPT_DIR/chromium/src"
+    local version_file="$chromium_src_dir/chrome/VERSION"
+
+    if [ ! -d "$depot_tools_dir" ] || [ ! -x "$depot_tools_dir/autoninja" ]; then
+        return 1
+    fi
+
+    if [ ! -d "$chromium_src_dir/.git" ]; then
+        return 1
+    fi
+
+    if [ ! -f "$version_file" ]; then
+        return 1
+    fi
+
+    local local_ver
+    local_ver="$(read_chromium_version "$version_file" 2>/dev/null || true)"
+    if [ "$local_ver" != "$VERSION" ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+get_effective_fast_local_build() {
+    if [ -n "$USER_FAST_LOCAL_BUILD" ]; then
+        echo "$USER_FAST_LOCAL_BUILD"
+        return 0
+    fi
+
+    if can_use_fast_local_build; then
+        echo "1"
+    else
+        echo "0"
+    fi
+}
 
 get_branch_prefix() {
     local branch="$1"
@@ -75,12 +129,32 @@ is_branch_up_to_date() {
     # 如果产物存在但没有记录 commit stamp（例如早前版本编译产出的），
     # 只要产物存在且当前工作树没有未提交修改，也视为无需重复构建
     if [ ! -f "$stamp_file" ]; then
-        if [ -z "$(git status --porcelain)" ]; then
+        local current_branch
+        current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        if [ "$current_branch" = "$branch" ] && [ -z "$(git status --porcelain)" ]; then
+            return 0
+        elif [ "$current_branch" != "$branch" ]; then
             return 0
         fi
     fi
 
     return 1
+}
+
+switch_branch() {
+    local target_branch="$1"
+    local current_branch
+    current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [ "$current_branch" = "$target_branch" ]; then
+        return 0
+    fi
+
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "WARNING: Working tree has uncommitted modifications before switching to '$target_branch':" >&2
+        git status --short >&2
+    fi
+
+    git checkout "$target_branch"
 }
 
 build_branch() {
@@ -100,10 +174,27 @@ build_branch() {
         return 0
     fi
 
-    git checkout "$branch"
+    switch_branch "$branch"
 
-    FAST_LOCAL_BUILD="$FAST_LOCAL_BUILD" \
+    local effective_fast_local
+    effective_fast_local="$(get_effective_fast_local_build)"
+
+    if [ -n "$USER_FAST_LOCAL_BUILD" ]; then
+        echo "User specified FAST_LOCAL_BUILD=$effective_fast_local"
+    else
+        if [ "$effective_fast_local" = "1" ]; then
+            echo "Auto-detected: Chromium source tree and depot_tools are ready. Enabling FAST_LOCAL_BUILD=1 (fast incremental build)."
+        else
+            echo "Auto-detected: Chromium source tree or depot_tools not ready. Using FAST_LOCAL_BUILD=0 (full source preparation)."
+        fi
+    fi
+
+    FAST_LOCAL_BUILD="$effective_fast_local" \
     BUILD_PROXY="$DEFAULT_PROXY" \
+    http_proxy="$DEFAULT_PROXY" \
+    https_proxy="$DEFAULT_PROXY" \
+    HTTP_PROXY="$DEFAULT_PROXY" \
+    HTTPS_PROXY="$DEFAULT_PROXY" \
     BUILD_ARM="$BUILD_ARM" \
     BUILD_ARM64="$BUILD_ARM64" \
     BUILD_AAB="$BUILD_AAB" \
@@ -115,6 +206,15 @@ build_branch() {
     mkdir -p "$SCRIPT_DIR/chromium/src/out/release"
     printf '%s\n' "$current_head" > "$SCRIPT_DIR/chromium/src/out/release/.built_commit_${branch}"
 }
+
+echo "=== Build Configuration ==="
+echo "BUILD_PROXY : $DEFAULT_PROXY"
+echo "BUILD_ARM   : $BUILD_ARM"
+echo "BUILD_ARM64 : $BUILD_ARM64"
+echo "BUILD_AAB   : $BUILD_AAB"
+echo "AUTO_RELEASE: $AUTO_RELEASE"
+echo "==========================="
+echo ""
 
 build_branch "main" "1"
 
@@ -133,5 +233,12 @@ if [ "$AUTO_RELEASE" = "1" ]; then
     echo "=========================================================="
     echo " [Auto Release] Publishing artifacts with MOVE=1 release.sh..."
     echo "=========================================================="
-    MOVE=1 "$SCRIPT_DIR/release.sh"
+    PROXY_URL="$DEFAULT_PROXY" \
+    BUILD_PROXY="$DEFAULT_PROXY" \
+    http_proxy="$DEFAULT_PROXY" \
+    https_proxy="$DEFAULT_PROXY" \
+    HTTP_PROXY="$DEFAULT_PROXY" \
+    HTTPS_PROXY="$DEFAULT_PROXY" \
+    MOVE=1 \
+    "$SCRIPT_DIR/release.sh"
 fi
