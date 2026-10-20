@@ -54,7 +54,19 @@ set_keys() {
 
 sign_apk() {
     export apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -n 1)
+    export zipalign=$(find "$ANDROID_HOME/build-tools" -name zipalign | sort | tail -n 1)
     source "$SCRIPT_DIR/keys/local.properties"
+    local input_apk="$1"
+    local output_apk="$2"
+    local to_sign="$input_apk"
+    local tmp_aligned=""
+
+    if [ -n "$zipalign" ] && [ -x "$zipalign" ]; then
+        tmp_aligned="$(mktemp --suffix=-aligned.apk)"
+        "$zipalign" -p -f 4 "$input_apk" "$tmp_aligned"
+        to_sign="$tmp_aligned"
+    fi
+
     if [ -n "${storeType:-}" ]; then
         "$apksigner" sign --verbose \
             --ks "$SCRIPT_DIR/keys/test.jks" \
@@ -65,8 +77,8 @@ sign_apk() {
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            --out "$2" \
-            "$1" || exit 1
+            --out "$output_apk" \
+            "$to_sign" || { rm -f "$tmp_aligned"; exit 1; }
     else
         "$apksigner" sign --verbose \
             --ks "$SCRIPT_DIR/keys/test.jks" \
@@ -76,8 +88,11 @@ sign_apk() {
             --v1-signing-enabled true \
             --v2-signing-enabled true \
             --v3-signing-enabled true \
-            --out "$2" \
-            "$1" || exit 1
+            --out "$output_apk" \
+            "$to_sign" || { rm -f "$tmp_aligned"; exit 1; }
+    fi
+    if [ -n "$tmp_aligned" ]; then
+        rm -f "$tmp_aligned"
     fi
 }
 

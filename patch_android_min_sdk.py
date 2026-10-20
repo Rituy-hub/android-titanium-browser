@@ -23,6 +23,28 @@ def patch_file(file_path: str, replacements: list) -> bool:
     return False
 
 
+def patch_manifest_extract_native_libs(src_dir: str) -> None:
+    manifest_path = os.path.join(src_dir, "chrome/android/java/AndroidManifest.xml")
+    if not os.path.isfile(manifest_path):
+        return
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Android 10 (API 29) throws PackageParserException / "解析软件包时出现问题"
+    # if extractNativeLibs="false" but native libraries (.so) inside APK are compressed (Deflate)
+    # or not 4KB/16KB aligned. Setting extractNativeLibs="true" allows Android 10 to extract .so
+    # to app dir cleanly and bypasses zip alignment/compression parsing rejection.
+    new_content = content.replace(
+        'android:extractNativeLibs="false"', 'android:extractNativeLibs="true"'
+    )
+    if new_content != content:
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        print(
+            "Patched AndroidManifest.xml: set android:extractNativeLibs=\"true\" for Android 10 compatibility."
+        )
+
+
 def main() -> None:
     src_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 
@@ -93,7 +115,10 @@ def main() -> None:
                         ],
                     )
 
-    print("minSdkVersion downgrade patch check complete (target minSdk: 29 / Android 10).")
+    # Ensure extractNativeLibs="true"
+    patch_manifest_extract_native_libs(src_dir)
+
+    print("minSdkVersion downgrade & extractNativeLibs check complete (target minSdk: 29 / Android 10).")
 
 
 if __name__ == "__main__":
