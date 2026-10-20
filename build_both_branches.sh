@@ -116,28 +116,27 @@ is_branch_up_to_date() {
         return 1
     fi
 
+    # 2. 检查记录的 commit stamp 文件是否存在
+    if [ ! -f "$stamp_file" ]; then
+        # 没有 stamp 文件，无法证明既有产物是针对当前 commit 构建的，必须重新编译
+        return 1
+    fi
+
+    # 3. 获取目标分支当前最新的 commit
     local current_head
     current_head="$(git rev-parse "refs/heads/$branch" 2>/dev/null || true)"
     if [ -z "$current_head" ]; then
         return 1
     fi
 
-    if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file" 2>/dev/null)" = "$current_head" ]; then
+    # 4. 对比已编译记录的 commit 是否与目标分支最新 commit 一致
+    local built_head
+    built_head="$(cat "$stamp_file" 2>/dev/null || true)"
+    if [ "$built_head" = "$current_head" ]; then
         return 0
     fi
 
-    # 如果产物存在但没有记录 commit stamp（例如早前版本编译产出的），
-    # 只要产物存在且当前工作树没有未提交修改，也视为无需重复构建
-    if [ ! -f "$stamp_file" ]; then
-        local current_branch
-        current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-        if [ "$current_branch" = "$branch" ] && [ -z "$(git status --porcelain)" ]; then
-            return 0
-        elif [ "$current_branch" != "$branch" ]; then
-            return 0
-        fi
-    fi
-
+    # commit 不一致（代码有更新），必须重新编译
     return 1
 }
 
@@ -173,6 +172,15 @@ build_branch() {
         echo "Skipping build for '$branch'."
         return 0
     fi
+
+    local prefix
+    prefix="$(get_branch_prefix "$branch")"
+    local release_dir="$SCRIPT_DIR/chromium/src/out/release"
+    local stamp_file="$release_dir/.built_commit_${branch}"
+
+    # 即将针对新 commit 构建：清理该分支在 out/release 中的旧产物与 stamp
+    rm -f "$stamp_file"
+    rm -f "$release_dir/${prefix}"* 2>/dev/null || true
 
     switch_branch "$branch"
 
