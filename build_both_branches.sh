@@ -9,10 +9,19 @@ BUILD_ARM="${BUILD_ARM:-1}"
 BUILD_ARM64="${BUILD_ARM64:-1}"
 BUILD_AAB="${BUILD_AAB:-0}"
 NINJA_JOBS="${NINJA_JOBS:-14}"
+AUTO_PULL="${AUTO_PULL:-1}"
 USER_FAST_LOCAL_BUILD="${FAST_LOCAL_BUILD:-}"
 AUTO_RELEASE="${AUTO_RELEASE:-1}"
 SKIP_IF_EXISTS="${SKIP_IF_EXISTS:-1}"
 FORCE_REBUILD="${FORCE_REBUILD:-0}"
+
+# 导出代理环境变量，供后续 git / gh / curl 等工具使用
+export HTTP_PROXY="$DEFAULT_PROXY"
+export HTTPS_PROXY="$DEFAULT_PROXY"
+export http_proxy="$DEFAULT_PROXY"
+export https_proxy="$DEFAULT_PROXY"
+export all_proxy="$DEFAULT_PROXY"
+export ALL_PROXY="$DEFAULT_PROXY"
 
 VERSION_ARGS="$SCRIPT_DIR/vanadium/args.gn"
 VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' "$VERSION_ARGS" || true)
@@ -156,6 +165,66 @@ switch_branch() {
     git checkout "$target_branch"
 }
 
+sync_git_from_remote() {
+    echo "=========================================================="
+    echo " [Git Sync] Checking and pulling latest updates from GitHub..."
+    echo "=========================================================="
+
+    if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+        echo "WARNING: Working tree has uncommitted changes. Skipping git sync to protect local files." >&2
+        return 0
+    fi
+
+    local self_script="${BASH_SOURCE[0]}"
+    local hash_before=""
+    if [ -f "$self_script" ]; then
+        hash_before="$(sha256sum "$self_script" 2>/dev/null | awk '{print $1}' || true)"
+    fi
+
+    echo "Fetching remote references from origin (proxy: $DEFAULT_PROXY)..."
+    git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --prune
+
+    for br in "main" "lemur-style-app-menu"; do
+        if git show-ref --verify --quiet "refs/remotes/origin/$br"; then
+            echo "Syncing branch '$br' with 'origin/$br'..."
+            if git show-ref --verify --quiet "refs/heads/$br"; then
+                switch_branch "$br"
+                git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" merge --ff-only "origin/$br" || {
+                    echo "Notice: Non-fast-forward merge for '$br'. Attempting pull..." >&2
+                    git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" pull origin "$br" || true
+                }
+            else
+                git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" branch --track "$br" "origin/$br"
+            fi
+        fi
+    done
+
+    # 确保 vanadium 子模块处于干净且同步的状态
+    if [ -d "$SCRIPT_DIR/vanadium" ]; then
+        if [ -n "$(git -C "$SCRIPT_DIR/vanadium" status --porcelain 2>/dev/null || true)" ]; then
+            echo "Resetting uncommitted changes in vanadium submodule..."
+            git -C "$SCRIPT_DIR/vanadium" reset --hard >/dev/null 2>&1 || true
+            git -C "$SCRIPT_DIR/vanadium" clean -fd >/dev/null 2>&1 || true
+        fi
+    fi
+    echo "Syncing git submodules..."
+    git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" submodule update --init --recursive
+
+    # 若拉取更新了当前脚本自身，重新加载并执行最新版本
+    local hash_after=""
+    if [ -f "$self_script" ]; then
+        hash_after="$(sha256sum "$self_script" 2>/dev/null | awk '{print $1}' || true)"
+    fi
+
+    if [ -n "$hash_before" ] && [ -n "$hash_after" ] && [ "$hash_before" != "$hash_after" ]; then
+        echo "=========================================================="
+        echo " Notice: $(basename "$self_script") was updated from GitHub."
+        echo " Re-executing script to run the updated version..."
+        echo "=========================================================="
+        AUTO_PULL=0 exec "$self_script" "$@"
+    fi
+}
+
 build_branch() {
     local branch="$1"
     local step_num="$2"
@@ -217,12 +286,18 @@ build_branch() {
 
 echo "=== Build Configuration ==="
 echo "BUILD_PROXY : $DEFAULT_PROXY"
+echo "AUTO_PULL   : $AUTO_PULL"
 echo "BUILD_ARM   : $BUILD_ARM"
 echo "BUILD_ARM64 : $BUILD_ARM64"
 echo "BUILD_AAB   : $BUILD_AAB"
 echo "AUTO_RELEASE: $AUTO_RELEASE"
 echo "==========================="
 echo ""
+
+if [ "$AUTO_PULL" = "1" ]; then
+    sync_git_from_remote
+    echo ""
+fi
 
 build_branch "main" "1"
 
