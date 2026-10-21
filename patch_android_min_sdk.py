@@ -26,6 +26,11 @@ def patch_file(file_path: str, replacements: list) -> bool:
 def patch_target_sdk_in_gni(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         return False
+    # Never inject target_sdk_version into build/config/android to avoid GN scope clobber errors
+    norm_path = file_path.replace("\\", "/")
+    if "build/config/android" in norm_path:
+        return False
+
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
@@ -54,6 +59,24 @@ def patch_target_sdk_in_gni(file_path: str) -> bool:
     return False
 
 
+def clean_clobbering_in_build_config(src_dir: str) -> None:
+    # Clean up any target_sdk_version that was erroneously injected into global build/config/android files
+    check_files = [
+        os.path.join(src_dir, "build/config/android/config.gni"),
+        os.path.join(src_dir, "build/config/android/rules.gni"),
+    ]
+    for target_file in check_files:
+        if not os.path.isfile(target_file):
+            continue
+        with open(target_file, "r", encoding="utf-8") as f:
+            c = f.read()
+        nc = re.sub(r"^[ \t]*target_sdk_version\s*=\s*\d+.*$\n?", "", c, flags=re.MULTILINE)
+        if nc != c:
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(nc)
+            print(f"Cleaned clobbering target_sdk_version from global file: {target_file}")
+
+
 def remove_original_package_from_manifest(src_dir: str) -> None:
     manifest_paths = [
         os.path.join(src_dir, "chrome/android/java/AndroidManifest.xml"),
@@ -69,6 +92,7 @@ def remove_original_package_from_manifest(src_dir: str) -> None:
                 f.write(new_content)
             print("Patched AndroidManifest.xml: removed <original-package> to avoid system package signature conflicts.")
 
+
 def patch_manifest_extract_native_libs(src_dir: str) -> None:
     manifest_path = os.path.join(src_dir, "chrome/android/java/AndroidManifest.xml")
     if not os.path.isfile(manifest_path):
@@ -76,10 +100,6 @@ def patch_manifest_extract_native_libs(src_dir: str) -> None:
     with open(manifest_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Android 10 (API 29) throws PackageParserException / "解析软件包时出现问题"
-    # if extractNativeLibs="false" but native libraries (.so) inside APK are compressed (Deflate)
-    # or not 4KB/16KB aligned. Setting extractNativeLibs="true" allows Android 10 to extract .so
-    # to app dir cleanly and bypasses zip alignment/compression parsing rejection.
     new_content = content.replace(
         'android:extractNativeLibs="false"', 'android:extractNativeLibs="true"'
     )
@@ -94,6 +114,10 @@ def patch_manifest_extract_native_libs(src_dir: str) -> None:
 def main() -> None:
     src_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 
+    # 1. Clean clobbering variables in build/config/android
+    clean_clobbering_in_build_config(src_dir)
+
+    # 2. Inject target_sdk_version = 34 ONLY in specific APK/module templates
     key_gni_targets = [
         os.path.join(src_dir, "chrome/android/chrome_public_apk_tmpl.gni"),
         os.path.join(src_dir, "chrome/android/trichrome.gni"),
@@ -104,22 +128,7 @@ def main() -> None:
     for gni_file in key_gni_targets:
         patch_target_sdk_in_gni(gni_file)
 
-    # Patch build/config/android/config.gni if default_android_sdk_version is set to higher SDK
-    config_gni = os.path.join(src_dir, "build/config/android/config.gni")
-    if os.path.isfile(config_gni):
-        with open(config_gni, "r", encoding="utf-8") as f:
-            cfg = f.read()
-        new_cfg = re.sub(
-            r"default_android_sdk_version\s*=\s*\d+",
-            "default_android_sdk_version = 34",
-            cfg,
-        )
-        if new_cfg != cfg:
-            with open(config_gni, "w", encoding="utf-8") as f:
-                f.write(new_cfg)
-            print(f"Patched default_android_sdk_version to 34 in: {config_gni}")
-
-    # Patch expectations so expectation checking will not fail the build
+    # 3. Patch expectations so expectation checking will not fail the build
     expectations_dirs = [
         os.path.join(src_dir, "chrome/android/expectations"),
         os.path.join(src_dir, "android_webview/expectations"),
@@ -147,12 +156,11 @@ def main() -> None:
                                 f.write(nc)
                             print(f"Patched AndroidManifest expectations in: {exp_path}")
 
-    # Scan relevant directories dynamically for any remaining hardcoded min/target SDK versions
+    # 4. Scan relevant feature directories (EXCLUDING build/config/android)
     scan_dirs = [
         os.path.join(src_dir, "chrome/android"),
         os.path.join(src_dir, "android_webview"),
         os.path.join(src_dir, "vanadium"),
-        os.path.join(src_dir, "build/config/android"),
     ]
 
     for scan_dir in scan_dirs:
@@ -174,7 +182,7 @@ def main() -> None:
                         ],
                     )
 
-    # Ensure extractNativeLibs="true"
+    # 5. Manifest adjustments
     patch_manifest_extract_native_libs(src_dir)
     remove_original_package_from_manifest(src_dir)
 
