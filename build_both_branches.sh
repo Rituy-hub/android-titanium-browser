@@ -157,7 +157,7 @@ switch_branch() {
         return 0
     fi
 
-    if [ -n "$(git status --porcelain)" ]; then
+    if [ -n "$(git status --porcelain -uno)" ]; then
         echo "WARNING: Working tree has uncommitted modifications before switching to '$target_branch':" >&2
         git status --short >&2
     fi
@@ -170,7 +170,7 @@ sync_git_from_remote() {
     echo " [Git Sync] Checking and pulling latest updates from GitHub..."
     echo "=========================================================="
 
-    if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+    if [ -n "$(git status --porcelain -uno 2>/dev/null || true)" ]; then
         echo "WARNING: Working tree has uncommitted changes. Skipping git sync to protect local files." >&2
         return 0
     fi
