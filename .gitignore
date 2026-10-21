@@ -9,3 +9,6 @@ keys/
 *.apk
 __pycache__/
 *.pyc
+
+android-titanium-browser/
+android-helium-browser/
