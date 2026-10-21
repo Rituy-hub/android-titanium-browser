@@ -54,6 +54,21 @@ def patch_target_sdk_in_gni(file_path: str) -> bool:
     return False
 
 
+def remove_original_package_from_manifest(src_dir: str) -> None:
+    manifest_paths = [
+        os.path.join(src_dir, "chrome/android/java/AndroidManifest.xml"),
+    ]
+    for manifest_path in manifest_paths:
+        if not os.path.isfile(manifest_path):
+            continue
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        new_content = re.sub(r"[ \t]*<original-package[^>]*>\s*", "\n", content)
+        if new_content != content:
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            print("Patched AndroidManifest.xml: removed <original-package> to avoid system package signature conflicts.")
+
 def patch_manifest_extract_native_libs(src_dir: str) -> None:
     manifest_path = os.path.join(src_dir, "chrome/android/java/AndroidManifest.xml")
     if not os.path.isfile(manifest_path):
@@ -161,6 +176,7 @@ def main() -> None:
 
     # Ensure extractNativeLibs="true"
     patch_manifest_extract_native_libs(src_dir)
+    remove_original_package_from_manifest(src_dir)
 
     print("SDK version injection (minSdk: 29 / targetSdk: 34) & extractNativeLibs check complete.")
 

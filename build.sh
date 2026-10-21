@@ -519,6 +519,7 @@ else
     rm -f $VANADIUM_PATCH_DIR/*javascript-optimizer-{site-setting,settings-UI}.patch
     rm -f $VANADIUM_PATCH_DIR/*component-updates.patch
     rm -f $VANADIUM_PATCH_DIR/*{pdf,PDF,for-content-public,toolbar-button,configs-from-config-app,config-app-parsing,new-tab-card,predictive-back}*.patch
+    rm -f $VANADIUM_PATCH_DIR/*original-package*.patch
     # rm -rf $SCRIPT_DIR/vanadium/patches/*crashpad*.patch
     replace "$VANADIUM_PATCH_DIR" "VANADIUM" "HELIUM"
     replace "$VANADIUM_PATCH_DIR" "Vanadium" "Helium"
