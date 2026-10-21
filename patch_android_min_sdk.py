@@ -18,7 +18,7 @@ def patch_file(file_path: str, replacements: list) -> bool:
     if new_content != content:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
-        print(f"Patched minSdkVersion in: {file_path}")
+        print(f"Patched SDK version in: {file_path}")
         return True
     return False
 
@@ -51,40 +51,62 @@ def main() -> None:
     targets = [
         (
             os.path.join(src_dir, "chrome/android/chrome_public_apk_tmpl.gni"),
-            [("min_sdk_version = 34", "min_sdk_version = 29")],
+            [
+                ("min_sdk_version = 34", "min_sdk_version = 29"),
+                ("target_sdk_version = 37", "target_sdk_version = 34"),
+                ("target_sdk_version = 36", "target_sdk_version = 34"),
+                ("target_sdk_version = 35", "target_sdk_version = 34"),
+            ],
         ),
         (
             os.path.join(src_dir, "chrome/android/trichrome.gni"),
-            [("min_sdk_version = 34", "min_sdk_version = 29")],
+            [
+                ("min_sdk_version = 34", "min_sdk_version = 29"),
+                ("target_sdk_version = 37", "target_sdk_version = 34"),
+                ("target_sdk_version = 36", "target_sdk_version = 34"),
+                ("target_sdk_version = 35", "target_sdk_version = 34"),
+            ],
         ),
         (
             os.path.join(src_dir, "android_webview/system_webview_apk_tmpl.gni"),
-            [("min_sdk_version = 34", "min_sdk_version = 29")],
+            [
+                ("min_sdk_version = 34", "min_sdk_version = 29"),
+                ("target_sdk_version = 37", "target_sdk_version = 34"),
+                ("target_sdk_version = 36", "target_sdk_version = 34"),
+                ("target_sdk_version = 35", "target_sdk_version = 34"),
+            ],
         ),
         (
             os.path.join(
                 src_dir,
                 "chrome/android/expectations/trichrome_library_64_32_apk.AndroidManifest.expected",
             ),
-            [('android:minSdkVersion="34"', 'android:minSdkVersion="29"')],
+            [
+                ('android:minSdkVersion="34"', 'android:minSdkVersion="29"'),
+                ('android:targetSdkVersion="37"', 'android:targetSdkVersion="34"'),
+            ],
         ),
         (
             os.path.join(
                 src_dir,
                 "chrome/android/expectations/trichrome_library_64_apk.AndroidManifest.expected",
             ),
-            [('android:minSdkVersion="34"', 'android:minSdkVersion="29"')],
+            [
+                ('android:minSdkVersion="34"', 'android:minSdkVersion="29"'),
+                ('android:targetSdkVersion="37"', 'android:targetSdkVersion="34"'),
+            ],
         ),
     ]
 
     for file_path, replacements in targets:
         patch_file(file_path, replacements)
 
-    # Also dynamically scan relevant directories if they exist for any remaining hardcoded min_sdk_version = 34
+    # Also dynamically scan relevant directories if they exist for any remaining hardcoded min_sdk_version = 34 or targetSdkVersion = 37
     scan_dirs = [
         os.path.join(src_dir, "chrome/android"),
         os.path.join(src_dir, "android_webview"),
         os.path.join(src_dir, "vanadium"),
+        os.path.join(src_dir, "build/config/android"),
     ]
 
     for scan_dir in scan_dirs:
@@ -92,33 +114,36 @@ def main() -> None:
             continue
         for root, _, files in os.walk(scan_dir):
             for file_name in files:
+                full_path = os.path.join(root, file_name)
                 if file_name.endswith((".gni", ".gn")):
-                    full_path = os.path.join(root, file_name)
                     patch_file(
                         full_path,
                         [
-                            (
-                                "min_sdk_version = 34",
-                                "min_sdk_version = 29",
-                            )
+                            ("min_sdk_version = 34", "min_sdk_version = 29"),
+                            ("target_sdk_version = 37", "target_sdk_version = 34"),
+                            ("target_sdk_version = 36", "target_sdk_version = 34"),
+                            ("target_sdk_version = 35", "target_sdk_version = 34"),
+                            ("default_min_sdk_version = 34", "default_min_sdk_version = 29"),
+                            ("default_target_sdk_version = 37", "default_target_sdk_version = 34"),
+                            ("default_target_sdk_version = 36", "default_target_sdk_version = 34"),
+                            ("default_target_sdk_version = 35", "default_target_sdk_version = 34"),
                         ],
                     )
-                elif file_name.endswith(".expected"):
-                    full_path = os.path.join(root, file_name)
+                elif file_name.endswith(".expected") or file_name == "AndroidManifest.xml":
                     patch_file(
                         full_path,
                         [
-                            (
-                                'android:minSdkVersion="34"',
-                                'android:minSdkVersion="29"',
-                            )
+                            ('android:minSdkVersion="34"', 'android:minSdkVersion="29"'),
+                            ('android:targetSdkVersion="37"', 'android:targetSdkVersion="34"'),
+                            ('android:targetSdkVersion="36"', 'android:targetSdkVersion="34"'),
+                            ('android:targetSdkVersion="35"', 'android:targetSdkVersion="34"'),
                         ],
                     )
 
     # Ensure extractNativeLibs="true"
     patch_manifest_extract_native_libs(src_dir)
 
-    print("minSdkVersion downgrade & extractNativeLibs check complete (target minSdk: 29 / Android 10).")
+    print("SDK version downgrade (minSdk: 29 / targetSdk: 34) & extractNativeLibs check complete.")
 
 
 if __name__ == "__main__":
