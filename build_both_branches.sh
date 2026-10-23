@@ -209,16 +209,28 @@ switch_branch() {
     local target_branch="$1"
     local current_branch
     current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    if [ "$current_branch" = "$target_branch" ]; then
-        return 0
+    if [ "$current_branch" != "$target_branch" ]; then
+        if [ -n "$(git status --porcelain -uno)" ]; then
+            echo "WARNING: Working tree has uncommitted modifications before switching to '$target_branch':" >&2
+            git status --short >&2
+        fi
+        git checkout "$target_branch"
     fi
 
-    if [ -n "$(git status --porcelain -uno)" ]; then
-        echo "WARNING: Working tree has uncommitted modifications before switching to '$target_branch':" >&2
-        git status --short >&2
+    # 切换分支后，自动重置并对齐当前分支所要求的 submodule commit，防止跨分支构建时子模块游离或版本滞后
+    if [ -d "$SCRIPT_DIR/vanadium" ]; then
+        if [ -n "$(git -C "$SCRIPT_DIR/vanadium" status --porcelain 2>/dev/null || true)" ]; then
+            git -C "$SCRIPT_DIR/vanadium" reset --hard >/dev/null 2>&1 || true
+            git -C "$SCRIPT_DIR/vanadium" clean -fd >/dev/null 2>&1 || true
+        fi
+        local expected_v_commit actual_v_commit
+        expected_v_commit="$(git ls-tree HEAD vanadium 2>/dev/null | awk '{print $3}' || true)"
+        actual_v_commit="$(git -C "$SCRIPT_DIR/vanadium" rev-parse HEAD 2>/dev/null || true)"
+        if [ -n "$expected_v_commit" ] && [ "$actual_v_commit" != "$expected_v_commit" ]; then
+            echo "Aligning vanadium submodule to commit required by '$target_branch' ($expected_v_commit)..."
+            git -c "http.proxy=$DEFAULT_PROXY" -c "https.proxy=$DEFAULT_PROXY" submodule update --init --recursive vanadium
+        fi
     fi
-
-    git checkout "$target_branch"
 }
 
 sync_git_from_remote() {
