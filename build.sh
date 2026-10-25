@@ -268,6 +268,16 @@ configure_out_dir() {
     fi
     printf '%s\n' "$VERSION" > "$out_dir/.helium_depfiles_version"
 
+    # [本地化] 在 gn gen 之前，把简体中文覆盖翻译注入 Chromium 的 zh-CN.xtb
+    # 该步骤非破坏式：仅追加缺失翻译，失败也不影响构建。
+    if [ -f "$SCRIPT_DIR/localization/apply_zhcn.py" ] && [ -f "$SCRIPT_DIR/localization/zh_cn_overrides.json" ]; then
+        echo "Applying Simplified-Chinese (zh-CN) localization overrides..."
+        python3 "$SCRIPT_DIR/localization/apply_zhcn.py" inject \
+            --root "$SCRIPT_DIR/chromium/src" \
+            --map "$SCRIPT_DIR/localization/zh_cn_overrides.json" \
+            --algo auto || echo "::warning::zh-CN localization injection skipped or failed"
+    fi
+
     mv "$desired_args" "$out_dir/args.gn"
     gn gen "$out_dir"
     refresh_restored_outputs "$out_dir"
